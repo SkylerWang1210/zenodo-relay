@@ -1,0 +1,55 @@
+name: zenodo-relay
+on:
+  workflow_dispatch:
+    inputs:
+      file:
+        description: '要搬运的文件'
+        required: true
+        type: choice
+        options:
+          - readme.pdf
+          - species.zip
+          - slice_culture.zip
+          - myocardial_infarction.zip
+          - human.zip
+permissions:
+  contents: write
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: download-split-upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          F: ${{ inputs.file }}
+        run: |
+          set -e
+          BASE="https://zenodo.org/api/records/16362349/files"
+          case "$F" in
+            readme.pdf)                MD5=7a8d2c827ac6acfa94053c4a0ecee58c ;;
+            species.zip)               MD5=fbba0a1819a8d1eddbc3b4af3d7f8676 ;;
+            slice_culture.zip)         MD5=07240f4a8acc9f3f6941b8a9ec03bdf8 ;;
+            myocardial_infarction.zip) MD5=43fba9d7f297eaa4cfd798478ce7157c ;;
+            human.zip)                 MD5=64f7adf00cea4164372ee8bcd3a0023c ;;
+          esac
+          mkdir -p /mnt/relay && cd /mnt/relay
+          rm -f "$F".part-* "$F".md5stream
+          echo "== downloading $F (expect md5 $MD5) =="
+          ok=0
+          for i in $(seq 1 6); do
+            rm -f "$F".part-*
+            if curl -fL --retry 5 --retry-delay 15 --connect-timeout 30 --max-time 12000 \
+                 -A "zenodo-relay-github-actions" "$BASE/$F/content" \
+                 | tee >(md5sum > "$F.md5stream") \
+                 | split -b 1900M -d -a 3 - "$F.part-"; then ok=1; break; fi
+            echo "attempt $i failed, retrying"; sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "DOWNLOAD FAILED"; exit 1; }
+          GOT=$(awk '{print $1}' "$F.md5stream")
+          echo "got md5: $GOT / expect: $MD5"
+          [ "$GOT" = "$MD5" ] || { echo "MD5 MISMATCH"; exit 1; }
+          TAG="relay-$(echo "$F" | tr '.' '-')"
+          gh release create "$TAG" --title "$TAG" --notes "auto relay of $F" || true
+          gh release upload "$TAG" "$F".part-* "$F".md5stream --clobber
+          echo "RELAY-OK $F"
