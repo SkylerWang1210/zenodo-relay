@@ -38,6 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           F: ${{ inputs.file }}
           URL_IN: ${{ inputs.url }}
+          ZTOK: ${{ secrets.ZENODO_TOKEN }}
           MD5_IN: ${{ inputs.md5 }}
           SIZE_IN: ${{ inputs.size }}
           CHUNK: ${{ inputs.chunk }}
