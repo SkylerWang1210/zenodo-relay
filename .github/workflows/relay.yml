@@ -33,7 +33,8 @@ jobs:
             myocardial_infarction.zip) MD5=43fba9d7f297eaa4cfd798478ce7157c ;;
             human.zip)                 MD5=64f7adf00cea4164372ee8bcd3a0023c ;;
           esac
-          mkdir -p /mnt/relay && cd /mnt/relay
+          sudo mkdir -p /mnt/relay && sudo chown $(whoami) /mnt/relay && cd /mnt/relay
+          REPO="SkylerWang1210/zenodo-relay"
           rm -f "$F".part-* "$F".md5stream
           echo "== downloading $F (expect md5 $MD5) =="
           ok=0
@@ -50,6 +51,6 @@ jobs:
           echo "got md5: $GOT / expect: $MD5"
           [ "$GOT" = "$MD5" ] || { echo "MD5 MISMATCH"; exit 1; }
           TAG="relay-$(echo "$F" | tr '.' '-')"
-          gh release create "$TAG" --title "$TAG" --notes "auto relay of $F" || true
-          gh release upload "$TAG" "$F".part-* "$F".md5stream --clobber
+          gh release create "$TAG" -R "$REPO" --title "$TAG" --notes "auto relay of $F" || true
+          gh release upload "$TAG" -R "$REPO" "$F".part-* "$F".md5stream --clobber
           echo "RELAY-OK $F"
