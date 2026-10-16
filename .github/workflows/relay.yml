@@ -16,6 +16,16 @@ on:
         required: false
         type: string
         default: ''
+      size:
+        description: '期望字节数(0=自动)'
+        required: false
+        type: string
+        default: '0'
+      chunk:
+        description: '分块字节(默认1900M)'
+        required: false
+        type: string
+        default: '1991285760'
 permissions:
   contents: write
 jobs:
@@ -29,9 +39,13 @@ jobs:
           F: ${{ inputs.file }}
           URL_IN: ${{ inputs.url }}
           MD5_IN: ${{ inputs.md5 }}
+          SIZE_IN: ${{ inputs.size }}
+          CHUNK: ${{ inputs.chunk }}
         run: |
           set -euo pipefail
           BASE="https://zenodo.org/api/records/16362349/files"
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
+          JAR=/tmp/jar.txt
           if [ -n "$URL_IN" ]; then URL="$URL_IN"; else URL="$BASE/$F/content"; fi
           if [ "$MD5_IN" = "nocheck" ]; then MD5=""; elif [ -n "$MD5_IN" ]; then MD5="$MD5_IN";
           else
@@ -44,28 +58,32 @@ jobs:
               *) MD5="" ;;
             esac
           fi
+          SIZE=${SIZE_IN:-0}
+          [ "$SIZE" = "0" ] || [ -z "$SIZE" ] && SIZE=$(curl -sIL -A "$UA" -b "$JAR" -c "$JAR" "$URL" | grep -i '^content-length' | tail -1 | tr -dc '0-9')
+          [ -n "$SIZE" ] && [ "$SIZE" != "0" ] || { echo "cannot determine size"; exit 1; }
+          echo "== $F size=$SIZE md5=${MD5:-none} chunk=$CHUNK =="
           sudo mkdir -p /mnt/relay && sudo chown $(whoami) /mnt/relay && cd /mnt/relay
           REPO="SkylerWang1210/zenodo-relay"
-          rm -f "$F".part-* "$F".md5stream
-          echo "== $F from $URL (md5=${MD5:-none}) =="
-          ok=0
-          for i in $(seq 1 8); do
-            rm -f "$F".part-*
-            if curl -fL --retry 5 --retry-delay 20 --connect-timeout 30 --max-time 12000 \
-                 -A "zenodo-relay-github-actions" "$URL" \
-                 | tee >(md5sum > "$F.md5stream") \
-                 | split -b 1900M -d -a 3 - "$F.part-"; then ok=1; break; fi
-            echo "attempt $i failed, retrying"; sleep 45
+          rm -f "$F".part-*
+          N=0; OFF=0
+          while [ $OFF -lt $SIZE ]; do
+            END=$((OFF + CHUNK - 1)); [ $END -ge $SIZE ] && END=$((SIZE - 1))
+            P=$(printf "%s.part-%03d" "$F" "$N")
+            WANT=$((END - OFF + 1))
+            for try in 1 2 3 4 5 6 7 8 9 10; do
+              curl -fsL -A "$UA" -b "$JAR" -c "$JAR" --connect-timeout 30 --max-time 1200 \
+                   -r "$OFF-$END" "$URL" -o "$P" && break
+              echo "chunk $N attempt $try failed"; sleep $((20 * try))
+            done
+            GOT=$(stat -c %s "$P" 2>/dev/null || echo 0)
+            [ "$GOT" = "$WANT" ] || { echo "chunk $N size mismatch $GOT/$WANT"; exit 1; }
+            OFF=$((END + 1)); N=$((N + 1))
+            echo "chunk $N done, $OFF/$SIZE bytes"
           done
-          [ "$ok" = 1 ] || { echo "DOWNLOAD FAILED"; exit 1; }
-          SZ=$(cat "$F".part-* | wc -c)
-          echo "streamed bytes: $SZ"
-          if [ -n "$MD5" ]; then
-            GOT=$(awk '{print $1}' "$F.md5stream")
-            echo "got md5: $GOT / expect: $MD5"
-            [ "$GOT" = "$MD5" ] || { echo "MD5 MISMATCH"; exit 1; }
-          fi
+          GOT_MD5=$(cat "$F".part-* | md5sum | awk '{print $1}')
+          echo "md5: $GOT_MD5 / expect ${MD5:-none}"
+          [ -z "$MD5" ] || [ "$GOT_MD5" = "$MD5" ] || { echo "MD5 MISMATCH"; exit 1; }
           TAG="relay-$(echo "$F" | tr '.' '-' | tr '/' '-')"
-          gh release create "$TAG" -R "$REPO" --title "$TAG" --notes "auto relay of $F" || true
-          gh release upload "$TAG" -R "$REPO" "$F".part-* "$F".md5stream --clobber
-          echo "RELAY-OK $F size=$SZ"
+          gh release create "$TAG" -R "$REPO" --title "$TAG" --notes "auto relay of $F ($SIZE bytes)" || true
+          gh release upload "$TAG" -R "$REPO" "$F".part-* --clobber
+          echo "RELAY-OK $F size=$SIZE md5=$GOT_MD5"
