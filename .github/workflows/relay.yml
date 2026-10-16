@@ -59,7 +59,14 @@ jobs:
             esac
           fi
           SIZE=${SIZE_IN:-0}
-          [ "$SIZE" = "0" ] || [ -z "$SIZE" ] && SIZE=$(curl -sIL -A "$UA" -b "$JAR" -c "$JAR" "$URL" | grep -i '^content-length' | tail -1 | tr -dc '0-9')
+          # 会话预热：Dryad 需要先访问页面建立 AWS 会话 cookie
+          if [[ "$URL" == *datadryad* ]]; then
+            curl -sL -A "$UA" -c "$JAR" "https://datadryad.org/dataset/doi%3A10.5061%2Fdryad.sqv9s4nbg" -o /dev/null || true
+            REF='https://datadryad.org/'
+          else
+            REF=''
+          fi
+          [ "$SIZE" = "0" ] || [ -z "$SIZE" ] && SIZE=$(curl -sIL -A "$UA" -b "$JAR" -c "$JAR" ${REF:+-e "$REF"} "$URL" | grep -i '^content-length' | tail -1 | tr -dc '0-9')
           [ -n "$SIZE" ] && [ "$SIZE" != "0" ] || { echo "cannot determine size"; exit 1; }
           echo "== $F size=$SIZE md5=${MD5:-none} chunk=$CHUNK =="
           sudo mkdir -p /mnt/relay && sudo chown $(whoami) /mnt/relay && cd /mnt/relay
@@ -71,7 +78,7 @@ jobs:
             P=$(printf "%s.part-%03d" "$F" "$N")
             WANT=$((END - OFF + 1))
             for try in 1 2 3 4 5 6 7 8 9 10; do
-              curl -fsL -A "$UA" -b "$JAR" -c "$JAR" --connect-timeout 30 --max-time 1200 \
+              curl -fsL -A "$UA" -b "$JAR" -c "$JAR" ${REF:+-e "$REF"} --connect-timeout 30 --max-time 1200 \
                    -r "$OFF-$END" "$URL" -o "$P" && break
               echo "chunk $N attempt $try failed"; sleep $((20 * try))
             done
